@@ -81,7 +81,15 @@ def load_charts(chart_list=None, render_to=''):
 
         # If translating, wrap series data in translate tags
         if len(settings.LANGUAGES) > 1:
-            chart_list = _recursive_translate(chart_list)
+            translated_chart_list = []
+            for chart in chart_list:
+                if chart.get('translate', True):
+                    translated_chart_list.append(
+                        _recursive_translate(chart)
+                    )
+                else:
+                    translated_chart_list.append(chart)
+            chart_list = translated_chart_list
 
         render_to_list = [s.strip() for s in render_to.split(',')]
         for hco, render_to in izip_longest(chart_list, render_to_list):
