@@ -245,7 +245,7 @@ def _convert_dps_to_dict(series_list):
                                 opt = copy.deepcopy(options)
                                 opt['fn'] = fn
                                 series_dict[t] = opt
-                    
+
         elif isinstance(terms, dict):
             for tk, tv in terms.items():
                 if isinstance(tv, basestring):
