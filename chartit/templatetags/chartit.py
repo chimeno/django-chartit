@@ -1,10 +1,14 @@
+import re
+import simplejson
+import posixpath
+
 from itertools import izip_longest
+from collections import defaultdict
 
 from django import template
-from django.utils import simplejson
 from django.utils.safestring import mark_safe
 from django.conf import settings
-import posixpath
+from django.utils.translation import ugettext as _
 
 from ..charts import Chart, PivotChart
 
@@ -22,6 +26,19 @@ except AttributeError:
                                       'chartloader.js')
 
 register = template.Library()
+
+def _recursive_translate(item):
+    if item and isinstance(item, basestring):
+        return _(item)
+    if isinstance(item, list):
+        return [_recursive_translate(x) for x in item]
+    if isinstance(item, dict) or isinstance(item, defaultdict):
+        for key, value in item.items():
+            item[key] = _recursive_translate(value)
+            # Cache our original value for client side reference
+            if isinstance(value, basestring):
+                item[key + '_raw'] = value
+    return item
 
 @register.filter
 def load_charts(chart_list=None, render_to=''):
@@ -52,16 +69,28 @@ def load_charts(chart_list=None, render_to=''):
       to the ``chartloader.js`` javascript file to be embedded in the webpage. 
       The ``chartloader.js`` has a jQuery script that renders a HighChart for 
       each of the options in the JSON array"""
-      
     embed_script = (
       '<script type="text/javascript">\n'
       'var _chartit_hco_array = %s;\n</script>\n'
       '<script src="%s" type="text/javascript">\n</script>')
-    
+   
     if chart_list is not None:
         if isinstance(chart_list, (Chart, PivotChart)):
             chart_list = [chart_list]
         chart_list = [c.hcoptions for c in chart_list]
+
+        # If translating, wrap series data in translate tags
+        if len(settings.LANGUAGES) > 1:
+            translated_chart_list = []
+            for chart in chart_list:
+                if chart.get('translate', True):
+                    translated_chart_list.append(
+                        _recursive_translate(chart)
+                    )
+                else:
+                    translated_chart_list.append(chart)
+            chart_list = translated_chart_list
+
         render_to_list = [s.strip() for s in render_to.split(',')]
         for hco, render_to in izip_longest(chart_list, render_to_list):
             if render_to:
@@ -69,6 +98,9 @@ def load_charts(chart_list=None, render_to=''):
         embed_script = (embed_script % (simplejson.dumps(chart_list, 
                                                          use_decimal=True),
                                         CHART_LOADER_URL))
+
+        # Escape functions
+        embed_script = re.sub('"(?P<fn>function\(\){.+?})"', '\g<fn>', embed_script)
     else:
         embed_script = embed_script %((), CHART_LOADER_URL)
     return mark_safe(embed_script)

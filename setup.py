@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 project = 'django_chartit'
-version = 0.1
-requires = ["django(>=1.3)", "simplejson"]
+version = "0.3.3"
+requires = ["simplejson(>=2.6.2)", "django(>=1.3)"]
 
 setup(
     name=project,

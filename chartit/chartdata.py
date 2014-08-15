@@ -31,9 +31,10 @@ class DataPool(object):
         
           Where 
           
-          - **options** (**required**) - a ``dict``. Any of the `series 
-            options <http://www.highcharts.com/ref/#series>`_ for the 
-            Highcharts ``options`` object are valid. 
+          - **options** - is a dict with one key.
+          
+            + **source** - is either a ``Model``, ``Manager`` or a 
+              ``QuerySet``.
               
           - **terms** - is a list. Each element in ``terms`` is either 
             
@@ -105,7 +106,7 @@ class DataPool(object):
         # TODO: using str(source.query) was the only way that I could think of
         # to compare whether two sources are exactly same. Need to figure out
         # if there is a better way. - PG
-        sort_grp_fn = lambda (tk, td): tuple(chain(str(td['source'].query), 
+        sort_grp_fn = lambda (tk, td): tuple(chain(unicode(td['source'].query), 
                                               [td[t] for t in addl_grp_terms]))
         s = sorted(self.series.items(), key=sort_grp_fn)
         # The following groupby will create an iterator which returns 
@@ -138,7 +139,7 @@ class PivotDataPool(DataPool):
     then *pivoted* against the category fields."""
     
     def __init__(self, series, top_n_term=None, top_n=None, pareto_term=None, 
-                 sortf_mapf_mts=None):
+                 sortf_mapf_mts=None, other=None, group_by=None):
         """ Creates a PivotDataPool object. 
         
         :Arguments: 
@@ -223,10 +224,10 @@ class PivotDataPool(DataPool):
         - **top_n** (*optional*) - an integer. The number of items for the 
           corresponding ``top_n_term`` that need to be retained. 
          
-          If ``top_n_term`` and ``top_n`` are present, only the ``top_n`` 
-          numberof items are going to displayed in the pivot chart. For 
-          example, if you want to plot only the top 5 states with highest 
-          average rainfall, you can do something like this. ::
+          If ``top_n_term`` and ``top_n`` are present, only the ``top_n`` number 
+          of items are going to displayed in the pivot chart. For example, if 
+          you want to plot only the top 5 states with highest average rainfall, 
+          you can do something like this. ::
             
             PivotDataPool(
               series = [
@@ -238,7 +239,7 @@ class PivotDataPool(DataPool):
               top_n_term = 'avg_rain',
               top_n = 5)
           
-          Note that the ``top_n_term`` is ``'avg_rain'`` and **not** ``state``; 
+          Note that the ``top_n_term`` is ``'avg_rain'`` and **not** ``state`` ; 
           because we want to limit by the average rainfall.
         
         - **pareto_term** (*optional*) - the term with respect to which the 
@@ -389,9 +390,11 @@ class PivotDataPool(DataPool):
                            in self.series.keys() else None)
         self.top_n = (top_n if (self.top_n_term is not None 
                                 and isinstance(top_n, int)) else 0)   
+        self.other = other
         self.pareto_term = (pareto_term if pareto_term in 
                             self.series.keys() else None)
         self.sortf, self.mapf, self.mts = clean_sortf_mapf_mts(sortf_mapf_mts)
+        self.group_by = group_by
         # query groups and data
         self.query_groups = \
           self._group_terms_by_query('top_n_per_cat','categories','legend_by')
@@ -466,10 +469,13 @@ class PivotDataPool(DataPool):
                 # vqs is a list of dicts. For example
                 # [{'continent': 'NA', 'country': 'USA', 'pop__sum': 300}]
                 for cv, g_vqs_by_cv in groupby(vqs, itemgetter(*categories)):
+
                     if not isinstance(cv, tuple):
                         cv = (cv,)
-                    cv = tuple(map(str, cv))
+                    cv = tuple(map(unicode, cv))
+
                     self.cv_raw |= set([cv])
+
                     # For the first loop (i==0), the queryset is already 
                     # pre-sorted by value of the data func alias (for example 
                     # pop__sum) when retrieved from the DB. So don't
@@ -481,7 +487,7 @@ class PivotDataPool(DataPool):
                         g_vqs_by_cv.sort(key=itemgetter(tk), 
                                          reverse=(td['top_n_per_cat']> 0))
                     # g_vqs_by_cv_dfv: Grouped Value QuerySet (grouped by 
-                    # category and then by datafunc value.
+                    # category and then by datafunc value
                     # alias = 'population__sum'
                     # itemgetter('pop__sum') = 10 etc.
                     # So grouped by pop__sum = 10, 9, etc.
@@ -502,44 +508,92 @@ class PivotDataPool(DataPool):
                     # dfv = datafunc value
                     # vqs_by_c_dfv =  ValuesQuerySet by cat. and datafunc value
                     for dfv, vqs_by_cv_dfv in g_vqs_by_cv_dfv:
-                        if tk == self.top_n_term:
-                            _cum_dfv_by_cv[cv] += dfv
-                        if tk == self.pareto_term:
-                            _pareto_by_cv[cv] += dfv
-                        for vd in vqs_by_cv_dfv:
-                            # vd: values dict
-                            # vd: {'continent': 'NA', 'country': 'USA', 
-                            #      'year': 2010, 'quarter': 2,
-                            #      'population__avg': 301,
-                            #      'gdp__avg': 14.12}
-                            # category = ('continent', 'country',)
-                            # legend = ('year', 'quarter')
-                            # lv = (2010, 2)
-                            # dfa = 'price__max'
-                            # cv_lv_dfv[('NA', 'USA')][(2010, 2)] = 301
-                            try:
-                                lv = itemgetter(*legend_by)(vd)
-                                if not isinstance(lv, tuple):
-                                    lv = (lv,)
-                                lv = tuple(map(str, lv))
-                            # If there is nothing to legend by i.e. 
-                            # legend_by=() then itemgetter raises a TypeError. 
-                            # Handle it.
-                            except TypeError:
-                                lv = ()
-                            cv_lv_dfv[cv][lv] = vd[tk]
-                            lv_set |= set([lv])
+
+                        _cvs = [cv]
+                        vqs_by_cv_dfv = list(vqs_by_cv_dfv)
+
+                        # If grouping our results by a group_by function, re-map our cv
+                        # to its group using that function. This implementation does not
+                        # currently work with top_n_per_cat or legend_by features
+                        if self.group_by is not None:
+                            gcv = self.group_by(cv, dfv)
+
+                            # Returning None ommits the cv from the group
+                            if gcv is None:
+                                self.cv_raw.remove(cv)
+                                continue
+
+                            if isinstance(gcv, tuple):
+                                _cvs = [(gx,) for gx in gcv]
+                            else:
+                                _cvs = [(gcv,)]
+
+                            # Keep cv raw up to date with our grouped categories
+                            self.cv_raw.remove(cv)
+
+                            for ncv in _cvs:
+                                self.cv_raw |= set([ncv])
+
+                        for cv in _cvs:
+                            if tk == self.top_n_term:
+                                _cum_dfv_by_cv[cv] += dfv
+                            if tk == self.pareto_term:
+                                _pareto_by_cv[cv] += dfv
+                            for vd in vqs_by_cv_dfv:
+                                # vd: values dict
+                                # vd: {'continent': 'NA', 'country': 'USA', 
+                                #      'year': 2010, 'quarter': 2,
+                                #      'population__avg': 301,
+                                #      'gdp__avg': 14.12}
+                                # category = ('continent', 'country',)
+                                # legend = ('year', 'quarter')
+                                # lv = (2010, 2)
+                                # dfa = 'price__max'
+                                # cv_lv_dfv[('NA', 'USA')][(2010, 2)] = 301
+                                try:
+                                    lv = itemgetter(*legend_by)(vd)
+                                    if not isinstance(lv, tuple):
+                                        lv = (lv,)
+                                    lv = tuple(map(str, lv))
+                                # If there is nothing to legend by i.e. 
+                                # legend_by=() then itemgetter raises a TypeError. 
+                                # Handle it.
+                                except TypeError:
+                                    lv = ()
+                                cv_lv_dfv[cv][lv] = (cv_lv_dfv.get(cv, {lv:0})[lv]) + vd[tk]
+                                lv_set |= set([lv])
+
                 td['_cv_lv_dfv'] = cv_lv_dfv
                 td['_lv_set'] = lv_set
+
+
         # If we only need top n items, remove the other items from self.cv_raw
+        other_has_data = False
         if self.top_n_term:
-            cum_cv_dfv_items = sorted(_cum_dfv_by_cv.items(), 
+            cum_cv_dfv_items = sorted(_cum_dfv_by_cv.items(),
                                       key = itemgetter(1),
                                       reverse = self.top_n > 0)
+
+            # If including an 'other' category, add this to our CVs and our series
+            if self.other:
+                other_items = cum_cv_dfv_items[abs(self.top_n):]
+
+                # Add up the values from our other items and create a new set of
+                # data for our 'other' category.
+                for term in self.series.keys():
+                    for lv in self.series[term]['_lv_set']:
+                        other_val = 0
+                        for ot in other_items:
+                            other_val += self.series[term]['_cv_lv_dfv'][ot[0]][lv]
+                        if other_val:
+                            other_has_data = True
+                            self.series[term]['_cv_lv_dfv'][(unicode(self.other),)][lv] = other_val
+
             cv_dfv_top_n_items = cum_cv_dfv_items[0:abs(self.top_n)]
             self.cv_raw = [cv_dfv[0] for cv_dfv in cv_dfv_top_n_items]
         else:
             self.cv_raw = list(self.cv_raw)
+
         # If we need to pareto, order the category values in pareto order.
         if self.pareto_term:
             pareto_cv_dfv_items = sorted(_pareto_by_cv.items(), 
@@ -550,7 +604,7 @@ class PivotDataPool(DataPool):
                 self.cv_raw = [cv for cv in pareto_cv if cv in self.cv_raw]
             else:
                 self.cv_raw = pareto_cv
-            
+
             if self.mapf is None:
                 self.cv = self.cv_raw
             else:
@@ -562,6 +616,13 @@ class PivotDataPool(DataPool):
                 self.cv = self.cv_raw
             else:
                 self.cv = [self.mapf(cv) for cv in self.cv_raw]
-                if self.mts: 
+                if self.mts and self.cv_raw:
                     combined = sorted(zip(self.cv, self.cv_raw),key=self.sortf)
                     self.cv, self.cv_raw = zip(*combined)
+
+        # Add our 'other' category to the back of our cv list
+        if other_has_data:
+            other_cv = (unicode(self.other),)
+            self.cv_raw.append(other_cv)
+            if other_cv not in self.cv:
+                self.cv.append(other_cv)
