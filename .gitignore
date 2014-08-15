@@ -5,3 +5,4 @@ build
 _dist
 dist
 *.egg-info
+__init__.py

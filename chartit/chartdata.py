@@ -5,7 +5,8 @@ from operator import itemgetter
 # use SortedDict instead of native OrderedDict for Python 2.6 compatibility
 from django.utils.datastructures import SortedDict
 from validation import clean_dps, clean_pdps
-from chartit.validation import clean_sortf_mapf_mts
+from .validation import clean_sortf_mapf_mts
+
 
 class DataPool(object):
     """DataPool holds the data retrieved from various models (tables)."""
