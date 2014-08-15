@@ -1,5 +1,10 @@
 import re
-import simplejson
+try:
+    import simplejson as json
+except:
+    import json
+import datetime
+
 import posixpath
 
 from itertools import izip_longest
@@ -27,6 +32,15 @@ except AttributeError:
 
 register = template.Library()
 
+
+class DateTimeJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return obj.isoformat()
+        else:
+            return super(DateTimeJSONEncoder, self).default(obj)
+
+
 def _recursive_translate(item):
     if item and isinstance(item, basestring):
         return _(item)
@@ -39,6 +53,7 @@ def _recursive_translate(item):
             if isinstance(value, basestring):
                 item[key + '_raw'] = value
     return item
+
 
 @register.filter
 def load_charts(chart_list=None, render_to=''):
@@ -95,8 +110,9 @@ def load_charts(chart_list=None, render_to=''):
         for hco, render_to in izip_longest(chart_list, render_to_list):
             if render_to:
                 hco['chart']['renderTo'] = render_to
-        embed_script = (embed_script % (simplejson.dumps(chart_list, 
-                                                         use_decimal=True),
+        embed_script = (embed_script % (json.dumps(chart_list,
+                                                         use_decimal=True,
+                                                         cls=DateTimeJSONEncoder),
                                         CHART_LOADER_URL))
 
         # Escape functions
